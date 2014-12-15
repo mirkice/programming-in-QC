@@ -142,8 +142,8 @@ program hueckel_linear
 
 select case (detail)
    case (0,1)
-      call cal_property(mat_r,mat_r,mat_out,num_elec,TPS)
-      call cal_property(mat_p,mat_p,mat_out,num_elec,TMS)
+      call cal_property1(mat_r,mat_out,num_elec,TPS,1)
+      call cal_property1(mat_p,mat_out,num_elec,TMS,2)
 
       if (detail .ne. 0) then
          write(*,304) "The result of TPS and TMS with num of carbon:" ,num_elec,TPS,TMS
@@ -160,7 +160,7 @@ select case (detail)
          do j=i,num_elec
             call ext_mat(mat_r,num_elec,i,mat_u)
             call ext_mat(mat_r,num_elec,j,mat_v)
-            call cal_property(mat_u,mat_v,mat_out,num_elec,PS)
+            call cal_property2(mat_u,mat_v,mat_out,num_elec,PS,1)
             write(*,306) num_elec,i,j,PS
             if (i .ne. j) then
                write(*,306) num_elec,j,i,PS
@@ -238,10 +238,39 @@ contains
 
 !-------------------calculate the property ( TPS, TMS ...)-----------------------------------
 
-    subroutine cal_property(mat_oper1,mat_oper2,mat_out,num_elec,output)
+
+    subroutine cal_property1(mat_oper1,mat_out,num_elec,output,type)
+      real*8,intent(in)::mat_oper1(num_elec,num_elec),mat_out(num_elec+3,num_elec)
+      integer,intent(in)::num_elec,type
+      real*8::output
+      integer::i,j,k
+      real*8::t1
+      
+      output=0
+
+      !$omp parallel &
+      !$omp private(i,j,t1,t2) &
+      !$omp shared(num_elec,mat_out,mat_oper1,mat_oper2)
+      !$omp do reduction(+:output)
+      do i=1,num_elec/2
+!         write(*,*) i,OMP_GET_THREAD_NUM()
+         do j=num_elec/2+1,num_elec
+            call eff_mat_m(mat_oper1,mat_out(4:num_elec+3,i),mat_out(4:num_elec+3,j),num_elec,t1,type)        
+            output=output+t1*t1*2
+         enddo
+      enddo
+      !$omp end do
+      !$omp end parallel
+
+    endsubroutine
+
+
+
+
+    subroutine cal_property2(mat_oper1,mat_oper2,mat_out,num_elec,output,type)
       real*8,intent(in)::mat_oper1(num_elec,num_elec),mat_oper2(num_elec,num_elec),mat_out(num_elec+3,num_elec)
-      integer,intent(in)::num_elec
-      real*8,intent(out)::output
+      integer,intent(in)::num_elec,type
+      real*8::output
       integer::i,j,k
       real*8::t1,t2
       
@@ -257,8 +286,8 @@ contains
 
 !               t1=dot_product(matmul(mat_out(4:num_elec+3,i),mat_oper1),mat_out(4:num_elec+3,j))
 !               t2=dot_product(matmul(mat_out(4:num_elec+3,i),mat_oper2),mat_out(4:num_elec+3,j))
-            call eff_mat_m(mat_oper1,mat_out(4:num_elec+3,i),mat_out(4:num_elec+3,j),num_elec,t1)
-            call eff_mat_m(mat_oper2,mat_out(4:num_elec+3,i),mat_out(4:num_elec+3,j),num_elec,t2)
+            call eff_mat_m(mat_oper1,mat_out(4:num_elec+3,i),mat_out(4:num_elec+3,j),num_elec,t1,type)
+            call eff_mat_m(mat_oper2,mat_out(4:num_elec+3,i),mat_out(4:num_elec+3,j),num_elec,t2,type)
                output=output+t1*t2*2
          enddo
       enddo
@@ -290,38 +319,35 @@ contains
         
 !-----------------efficient matrix vector multiply------------------
 
-     subroutine eff_mat_m(mat_in,vec_left,vec_right,dime,output)             !vec_left*mat_in*vec_right
-       integer,intent(in)::dime
+     subroutine eff_mat_m(mat_in,vec_left,vec_right,dime,output,type)             !vec_left*mat_in*vec_right
+       integer,intent(in)::dime,type
        real*8,intent(in)::mat_in(dime,dime),vec_left(dime),vec_right(dime)
-       integer::i,j,k,n_band,lda
-       real*8,allocatable::A(:,:)
        real*8::vec_temp(dime)
        real*8,intent(out)::output
-       
-!       n_band=0
-!       do i=2,dime
-!          if (mat_in(1,i) .ne. 0) then
-!             n_band=n_band+1
-!          endif
-!       enddo
-       
-       !lda=2*dime+1
-!       allocate(A(lda,dime))
-          
-!       do 20,j = 1, dime
-!          k = n_band + 1 - j
-!          do 10,i = MAX( 1, j - n_band ), MIN( dime, j + n_band )
-!             A( k + i, j ) = mat_in( i, j )
-!10 continue
-!20 continue
-!       write(*,*) A
- 
-       write(*,*) mat_in
-       stop
+       integer::i,j,sd,m
+       real*8,allocatable::A(:,:)
+
+       sd=0
        vec_temp=0
-       call dgemv('n',dime,dime,1,mat_in,dime,vec_left,1,0,vec_temp,1)
-!       write(*,*) vec_temp
-       output = dot_product(vec_temp,vec_right)
+!       write(*,*) type
+       
+       if (type .eq. 1) then
+          allocate(A(sd+1,dime))
+          do 20, j = 1, dime
+             m = sd + 1 - j
+             do 10, i = max( 1, j - sd ), j
+                A( m + i, j ) = mat_in( i, j )
+              10 continue
+              20 continue
+
+          call dsbmv('u',dime,sd,1.0d0,A,sd+1,vec_left,1,0.0d0,vec_temp,1)
+!          write(*,*) vec_temp
+!          stop
+       else
+          call dgemv('n',dime,dime,1.0d0,mat_in,dime,vec_left,1,0.0d0,vec_temp,1)
+       endif
+
+       output = dot_product(vec_right,vec_temp)
        
      endsubroutine eff_mat_m
 
